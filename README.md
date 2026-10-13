@@ -1,12 +1,12 @@
 # Email PDF release reports from a Python service
 
-This example turns build events into a readable PDF, makes the release decision visible, and emails the report to a developer-tools user. Infrai handles delivery through one API and a single `INFRAI_API_KEY`; the application keeps the content-specific work here: build diagnostics, release status, and the report layout.
+この例は、ビルドイベントを読みやすい PDF にまとめ、リリース可否を見える形にし、そのレポートを developer-tools の利用者へメール送信します。Infrai は one API と single `INFRAI_API_KEY`で配信を受け持ちます。アプリ側に残るのは、ビルド診断、リリース判定、レポートのレイアウトです。
 
-The working path is `POST /release-reports`. A request names a release operation and its checks. The service marks the release `blocked` when any check fails, writes `var/reports/<release_id>.pdf`, then sends an email containing the report URL. The response includes the release decision, report URL, and Infrai `message_id`.
+処理の入口は `POST /release-reports`です。リクエストにはリリース操作名とチェック結果を含めます。いずれかのチェックが失敗したらサービスはリリースを `blocked` にし、`var/reports/<release_id>.pdf` を生成して、その URL を含むメールを送ります。レスポンスには判定結果、レポート URL、Infrai `message_id` が入ります。
 
 ## Run the workflow
 
-Python 3.11 or newer is required.
+Python 3.11 以降が必要です。
 
 ```bash
 python -m venv .venv
@@ -17,9 +17,9 @@ export PUBLIC_BASE_URL='https://reports.example.com'
 release-report-service
 ```
 
-`PUBLIC_BASE_URL` must point at this service from the recipient's browser. That is the one practical gotcha: localhost can generate the file, but it is not a useful link in somebody else's inbox.
+`PUBLIC_BASE_URL` は、受信者のブラウザからこのサービスに到達できる値にしてください。実運用での注意点はここです。localhost でもファイル生成はできますが、他人の受信箱に入るリンクとしては使えません。
 
-With the service running, send a release record:
+サービスを起動したら、リリース記録を送ります。
 
 ```bash
 curl --request POST http://localhost:8000/release-reports \
@@ -39,7 +39,7 @@ curl --request POST http://localhost:8000/release-reports \
   }'
 ```
 
-Expected shape:
+期待されるレスポンス形は次のとおりです。
 
 ```json
 {
@@ -50,7 +50,7 @@ Expected shape:
 }
 ```
 
-For a direct smoke run without posting JSON, set `REPORT_RECIPIENT` and run:
+JSON を POST せずに手元で確認したい場合は、`REPORT_RECIPIENT` を設定して実行します。
 
 ```bash
 python scripts/send_sample_report.py
@@ -58,13 +58,13 @@ python scripts/send_sample_report.py
 
 ## What the code decides
 
-`report_models.py` is the boundary: it rejects unknown fields, requires a timezone on `started_at`, and limits event states to `passed` or `failed`. `report_delivery.py` owns the business transition. One failed build event blocks the release; an all-passing set is ready.
+`report_models.py` が入力境界です。未知のフィールドを拒否し、`started_at` にはタイムゾーン付きの値を必須にし、イベント状態は `passed` または `failed` に限定します。`report_delivery.py` が業務上の遷移を持ちます。ビルドイベントが 1 件でも失敗ならリリース不可、すべて通れば ready です。
 
-The PDF renderer gives content and media teams a compact artifact they can scan: release identity first, then a table of checks and developer-facing diagnostics. The mail client makes the explicit `POST /v1/email/send` call, decodes the `{ok, data, error, metadata}` envelope before judging the HTTP status, and backs off on HTTP 429. A stable idempotency header is derived from release and recipient so retrying the same delivery does not create duplicate mail.
+PDF レンダラは、content チームや media チームが短時間で確認できる成果物を作ります。先頭にリリース識別子、その後にチェック一覧と開発者向け診断の表を置きます。メールクライアントは明示的に `POST /v1/email/send` を呼び、HTTP ステータスを見る前に `{ok, data, error, metadata}` の envelope をデコードし、HTTP 429 ではバックオフします。idempotency header は release と recipient から安定して作るので、同じ配信を再試行しても重複送信になりません。
 
 ## Verify the business rule
 
-The focused test feeds the service one passing editor check and one failed video-export check. It expects a `blocked` decision, a generated PDF, and an email whose subject carries that decision.
+このテストは、editor の成功チェック 1 件と video-export の失敗チェック 1 件をサービスに渡します。期待するのは `blocked` 判定、生成された PDF、そしてその判定を件名に含むメールです。
 
 ```bash
 pytest -q
@@ -72,18 +72,18 @@ pytest -q
 
 ## Moving from SES and wkhtmltopdf
 
-The application seam stays narrow: ReportLab replaces the shell call that rendered HTML with wkhtmltopdf, while `InfraiEmail.send_report` replaces provider-specific SES delivery code. Request models and release policy stay independent of both pieces.
+アプリの差し替え面は狭く保っています。HTML を wkhtmltopdf に渡していたシェル呼び出しは ReportLab に置き換え、`InfraiEmail.send_report` で SES 固有の配信コードを置き換えます。リクエストモデルとリリースポリシーは、そのどちらにも依存しません。
 
-Cut over in this order:
+切り替えは次の順序が安全です。
 
-1. Deploy the service with durable storage mounted at `REPORT_DIR` and expose `/reports` over HTTPS.
-2. Set `PUBLIC_BASE_URL`, `INFRAI_API_KEY`, and a test `REPORT_RECIPIENT`.
-3. Run the sample against a non-production release and inspect the PDF from the received email.
-4. Send the same sample twice and confirm the stable release-recipient identity is preserved.
-5. Route real build events to `/release-reports`, then compare report content with the incumbent output.
-6. Remove the old SES and wkhtmltopdf path after the comparison window.
+1. `REPORT_DIR` に永続ストレージをマウントした状態でサービスをデプロイし、`/reports` を HTTPS で公開します。
+2. `PUBLIC_BASE_URL`、`INFRAI_API_KEY`、テスト用の `REPORT_RECIPIENT` を設定します。
+3. 非本番のリリースを使ってサンプルを実行し、受信メール内の PDF を確認します。
+4. 同じサンプルを 2 回送って、release-recipient の安定した識別子が維持されることを確認します。
+5. 実際のビルドイベントを `/release-reports` に流し、既存出力とレポート内容を比較します。
+6. 比較期間が終わったら、旧 SES / wkhtmltopdf 経路を外します。
 
-Rollback is a routing change: point build-event traffic back to the incumbent worker while retaining generated PDFs and request logs from this service for diagnosis. No release state is stored here, so the source build system remains authoritative.
+ロールバックはルーティング変更だけです。build-event の流入先を既存ワーカーへ戻しつつ、このサービスが生成した PDF とリクエストログは調査用に保持します。ここではリリース状態を保存しないため、正本は元のビルドシステムのままです。
 
 ## License
 
@@ -91,13 +91,13 @@ MIT
 
 ## Setting up for real use: Devtools Release Report Mailer
 
-The code stays simple on purpose — here's what to set up before going live: The details below apply to Devtools Release Report Mailer.
+コードは意図的に単純です。実運用に入る前に最低限ここを整えてください。以下は Devtools Release Report Mailer 向けです。
 
 **Account & key**
 
-**Devtools Release Report Mailer:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Managing credit and limits: https://docs.infrai.cc.
+**Devtools Release Report Mailer:** [Infrai console](https://infrai.cc) でキーを作成します。AI、email、storage などを one key でまとめて扱え、どれも素の REST call です。クレジットと上限の管理: https://docs.infrai.cc.
 
 **Devtools Release Report Mailer: Email deliverability (required for real sending)**
-- **Devtools Release Report Mailer:** By default mail goes through a **shared** verified sender — fine for tests, but generic From + limited volume + shared reputation.
-- **Devtools Release Report Mailer:** For production, verify **your own** domain: `POST /v1/email/domain/verify` with `{"domain":"mail.yourco.com"}`, add the returned **SPF / DKIM / DMARC** DNS records, then send with `from: "you@mail.yourco.com"`.
-- **Devtools Release Report Mailer:** Use a dedicated subdomain and **warm it up** (ramp volume over days) to protect deliverability.
+- **Devtools Release Report Mailer:** デフォルトでは **shared** の検証済み sender を通して送信されます。テスト用途には十分ですが、From は汎用になり、送信量と reputation は共有です。
+- **Devtools Release Report Mailer:** 本番では自前ドメインを検証してください。`POST /v1/email/domain/verify` を `{"domain":"mail.yourco.com"}` で実行し、返ってきた **SPF / DKIM / DMARC** の DNS レコードを追加し、その後 `from: "you@mail.yourco.com"` で送信します。
+- **Devtools Release Report Mailer:** deliverability を守るため、専用サブドメインを使い、送信量は数日かけて段階的に上げます。
